@@ -1,53 +1,77 @@
+import sys
+import pathlib
 import pytest
+import pytest_asyncio
 import asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from dotenv import load_dotenv
+import os
+
+# Загружаем .env (важно до импорта app.config)
+load_dotenv(dotenv_path=pathlib.Path(__file__).resolve().parents[1] / ".env")
+
+# Добавляем путь до корня проекта
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+
 from app.main import app
 from app.db.session import Base, get_db
 
-DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+# Берём URL из .env
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 @pytest.fixture(scope="session")
 def event_loop():
+    """Говорим pytest-asyncio какой event_loop юзать"""
     loop = asyncio.get_event_loop()
     yield loop
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def async_client():
+    """Фикстура для асинхронного клиента и тестовой БД"""
     engine = create_async_engine(DATABASE_URL, future=True)
-
     AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
+
+    # Создаём все таблицы
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # Подменяем зависимость get_db
     async def override_get_db():
         async with AsyncSessionLocal() as session:
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+
     async with AsyncClient(app=app, base_url="http://test") as client:
         yield client
 
 
 @pytest.mark.asyncio
 async def test_create_question_and_answer_and_cascade(async_client: AsyncClient):
-
+    # Создаём вопрос
     resp = await async_client.post("/questions/", json={"text": "Как дела?"})
     assert resp.status_code == 201
     question = resp.json()
-    qid = question["id"] if isinstance(question, list) else question["id"]
+    qid = question["id"]
 
+    # Добавляем ответ
     user_uuid = "00000000-0000-0000-0000-000000000001"
-    resp = await async_client.post(f"/questions/{qid}/answers/",
-                                   json={"user_id": user_uuid, "text": "Хорошо"})
+    resp = await async_client.post(
+        f"/questions/{qid}/answers/",
+        json={"user_id": user_uuid, "text": "Хорошо"}
+    )
     assert resp.status_code == 201
     answer = resp.json()
     aid = answer["id"]
 
+    # Удаляем вопрос
     resp = await async_client.delete(f"/questions/{qid}")
     assert resp.status_code == 204
 
+    # Проверяем, что ответ тоже удалён каскадом
     resp = await async_client.get(f"/answers/{aid}")
     assert resp.status_code == 404
