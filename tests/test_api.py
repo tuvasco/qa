@@ -8,38 +8,32 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from dotenv import load_dotenv
 import os
 
-# Загружаем .env (важно до импорта app.config)
 load_dotenv(dotenv_path=pathlib.Path(__file__).resolve().parents[1] / ".env")
 
-# Добавляем путь до корня проекта
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 from app.main import app
 from app.db.session import Base, get_db
 
-
-# Берём URL из .env
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 @pytest.fixture(scope="session")
 def event_loop():
-    """Говорим pytest-asyncio какой event_loop юзать"""
+
     loop = asyncio.get_event_loop()
     yield loop
 
 
 @pytest_asyncio.fixture
 async def async_client():
-    """Фикстура для асинхронного клиента и тестовой БД"""
+
     engine = create_async_engine(DATABASE_URL, future=True)
     AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
-    # Создаём все таблицы
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Подменяем зависимость get_db
     async def override_get_db():
         async with AsyncSessionLocal() as session:
             yield session
@@ -52,13 +46,13 @@ async def async_client():
 
 @pytest.mark.asyncio
 async def test_create_question_and_answer_and_cascade(async_client: AsyncClient):
-    # Создаём вопрос
+
     resp = await async_client.post("/questions/", json={"text": "Как дела?"})
     assert resp.status_code == 201
     question = resp.json()
     qid = question["id"]
 
-    # Добавляем ответ
+
     user_uuid = "00000000-0000-0000-0000-000000000001"
     resp = await async_client.post(
         f"/questions/{qid}/answers/",
@@ -68,10 +62,9 @@ async def test_create_question_and_answer_and_cascade(async_client: AsyncClient)
     answer = resp.json()
     aid = answer["id"]
 
-    # Удаляем вопрос
+
     resp = await async_client.delete(f"/questions/{qid}")
     assert resp.status_code == 204
 
-    # Проверяем, что ответ тоже удалён каскадом
     resp = await async_client.get(f"/answers/{aid}")
     assert resp.status_code == 404
